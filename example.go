@@ -11,6 +11,7 @@ func main() {
 	r := gin.Default()
 	r.Use(middleware.Cors())
 	r.POST("/file/upload", middleware.FileUpload)
+	r.GET("/file/getupid", middleware.GetUpId)
 	r.GET("/file/merge", middleware.MergeFileChunk)
 	r.GET("/file/download", middleware.Download)
 	r.GET("/file/verify", middleware.VerifyFile)

@@ -15,7 +15,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
-
+	// "sync/atomic"
+	// "unsafe"
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/gin-gonic/gin"
@@ -35,13 +36,74 @@ var DB *sql.DB
 
 var (
 	saveDir = utils.GetParentPath() + "\\attachment" // 文件存储根目录
+	// ptr     unsafe.Pointer
 )
 
+// type GloablConfig struct {
+// 	Addr                 string   `json:"addr"`
+// 	Peers                []string `json:"peers"`
+// 	EnableHttps          bool     `json:"enable_https"`
+// 	Group                string   `json:"group"`
+// 	RenameFile           bool     `json:"rename_file"`
+// 	ShowDir              bool     `json:"show_dir"`
+// 	Extensions           []string `json:"extensions"`
+// 	RefreshInterval      int      `json:"refresh_interval"`
+// 	EnableWebUpload      bool     `json:"enable_web_upload"`
+// 	DownloadDomain       string   `json:"download_domain"`
+// 	EnableCustomPath     bool     `json:"enable_custom_path"`
+// 	Scenes               []string `json:"scenes"`
+// 	AlarmReceivers       []string `json:"alarm_receivers"`
+// 	DefaultScene         string   `json:"default_scene"`
+// 	Mail                 Mail     `json:"mail"`
+// 	AlarmUrl             string   `json:"alarm_url"`
+// 	DownloadUseToken     bool     `json:"download_use_token"`
+// 	DownloadTokenExpire  int      `json:"download_token_expire"`
+// 	QueueSize            int      `json:"queue_size"`
+// 	AutoRepair           bool     `json:"auto_repair"`
+// 	Host                 string   `json:"host"`
+// 	FileSumArithmetic    string   `json:"file_sum_arithmetic"`
+// 	PeerId               string   `json:"peer_id"`
+// 	SupportGroupManage   bool     `json:"support_group_manage"`
+// 	AdminIps             []string `json:"admin_ips"`
+// 	EnableMergeSmallFile bool     `json:"enable_merge_small_file"`
+// 	EnableMigrate        bool     `json:"enable_migrate"`
+// 	EnableDistinctFile   bool     `json:"enable_distinct_file"`
+// 	ReadOnly             bool     `json:"read_only"`
+// 	EnableCrossOrigin    bool     `json:"enable_cross_origin"`
+// 	EnableGoogleAuth     bool     `json:"enable_google_auth"`
+// 	AuthUrl              string   `json:"auth_url"`
+// 	EnableDownloadAuth   bool     `json:"enable_download_auth"`
+// 	DefaultDownload      bool     `json:"default_download"`
+// 	EnableTus            bool     `json:"enable_tus"`
+// 	SyncTimeout          int64    `json:"sync_timeout"`
+// 	EnableFsnotify       bool     `json:"enable_fsnotify"`
+// 	EnableDiskCache      bool     `json:"enable_disk_cache"`
+// 	ConnectTimeout       bool     `json:"connect_timeout"`
+// 	ReadTimeout          int      `json:"read_timeout"`
+// 	WriteTimeout         int      `json:"write_timeout"`
+// 	IdleTimeout          int      `json:"idle_timeout"`
+// 	ReadHeaderTimeout    int      `json:"read_header_timeout"`
+// 	SyncWorker           int      `json:"sync_worker"`
+// 	UploadWorker         int      `json:"upload_worker"`
+// 	UploadQueueSize      int      `json:"upload_queue_size"`
+// 	RetryCount           int      `json:"retry_count"`
+// 	SyncDelay            int64    `json:"sync_delay"`
+// 	WatchChanSize        int      `json:"watch_chan_size"`
+// }
+
+// 小写的字段被认为是私有的，不会被标准的json序列化程序序列化。
 type FileInfo struct {
-	filename string
-	hash string
-	code string
+	Filename  string `json:"fileName"`
+	Fid       string `json:"fid"`
+	Cid       string `json:"cid"`
+	Hash       string `json:"hash"`
+	Size      int64  `json:"size"`
+	Path      string `json:"path"`
 }
+
+// func Config() *GloablConfig {
+// 	return (*GloablConfig)(atomic.LoadPointer(&ptr))
+// }
 
 //注意方法名大写，就是public
 func InitDB() {
@@ -76,6 +138,22 @@ func CreateFileStat(saveDir string) bool {
 	}
 
 	return true
+}
+
+// 多文件上传生成统一id
+func GetUpId(c *gin.Context) {
+	worker, err := utils.NewWorker(1)
+	if err != nil {
+		fmt.Println("生成机器id失败",err)
+		return
+	}
+	id := worker.GetId()
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": gin.H{
+			"fid": id,
+		},
+	})
 }
 
 func FileUpload(c *gin.Context) {
@@ -152,6 +230,8 @@ func FileUpload(c *gin.Context) {
 func MergeFileChunk(c *gin.Context) {
 	fileName := c.Query("fileName")
 	hash := c.Query("hash")
+	fid := c.Query("fid")	
+	size := c.Query("size")
 	pathTmp := saveDir + "\\" + hash + "-collection"
 	path := saveDir + "\\" + hash
 	files, _ := ioutil.ReadDir(pathTmp)
@@ -177,7 +257,7 @@ func MergeFileChunk(c *gin.Context) {
 	}
 	rawCode := GetBKDRHash(hash + strconv.FormatInt(time.Now().Unix(),10))
 	code := strconv.FormatUint(rawCode, 36)
-	InsertFileHash(hash, fileName,code)
+	InsertFileHash(hash, fileName,code, fid,size)
 	os.RemoveAll(pathTmp)
 	fii.Close()
 	c.JSON(http.StatusOK, gin.H{
@@ -188,22 +268,32 @@ func MergeFileChunk(c *gin.Context) {
 	})
 }
 
+// 获取下载文件列表
 func GetFileList(c *gin.Context) {
-	code := c.PostForm("code")
-	file := SelectFileByCode(code)
-	fmt.Println("查询code对应的文件", file, file.code)
-	// arr := [5]float32{1000.0, 2.0, 3.4, 7.0, 50.0}
+	fid := c.PostForm("fid")
+	list, err := SelectFileByFid(fid)
+	if !err {
+		c.JSON(http.StatusOK, gin.H{
+			"code": 101,
+			"message": "获取下载文件列表失败",
+		})
+		return
+	}
+	// file := SelectFileByCode(code)
+	// arr := [...]FileInfo{file}
+	fmt.Println("获取到的文件列表", list)
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0,
 		"data": gin.H{
-			"list": file,
+			"list": list,
 		},
 	})
 }
 
 func Download(c *gin.Context) {
-	fileName, _ := url.QueryUnescape(c.Query("fileName"))
-	fmt.Print("下载文件名称：", fileName)
+	code, _ := url.QueryUnescape(c.Query("code"))
+	fmt.Print("下载文件code：", code)
+	file := SelectFileByCode(code)
 	// file, err := os.Open(saveDir + "\\" + fileName)
 	// if err != nil {
 	// 	c.JSON(http.StatusNotFound, gin.H{
@@ -215,7 +305,7 @@ func Download(c *gin.Context) {
 	// defer file.Close()
 	c.Writer.WriteHeader(http.StatusOK)
 	c.Header("Content-Type", "application/octet-stream")
-	c.Header("Content-Disposition", "attachment; filename="+url.QueryEscape(fileName))
+	c.Header("Content-Disposition", "attachment; filename="+url.QueryEscape(file.Filename))
 	c.Header("Content-Transfer-Encoding", "binary")
 	c.Header("Cache-Control", "no-cache")
 	// c.File(file)
@@ -228,7 +318,7 @@ func Download(c *gin.Context) {
 	// 	return
 	// }
 	// c.Writer.Write([]byte(file))
-	c.File(saveDir + "\\" + fileName)
+	c.File(saveDir + "\\" + file.Hash)
 }
 
 // 验证是否存在hash
@@ -243,12 +333,12 @@ func VerifyFile(c *gin.Context) {
 }
 
 // 插入上传的文件hash信息
-func InsertFileHash(hash string, name string, code string) {
-	stmt,err := DB.Prepare("insert into `file_info`(hash,filename,code)values(?,?,?)")
+func InsertFileHash(hash string, name string, code string, fid string,size string) {
+	stmt,err := DB.Prepare("insert into `file_info`(hash,filename,cid,fid,size)values(?,?,?,?,?)")
 	if err != nil{
 		fmt.Println("预处理失败:",err)
 	}
-	result,err := stmt.Exec(hash,name,code)
+	result,err := stmt.Exec(hash,name,code,fid,size)
 	if err != nil{
 		fmt.Println("执行预处理失败:",err)
 	}else{
@@ -260,11 +350,11 @@ func InsertFileHash(hash string, name string, code string) {
 // 查询文件hash
 func SelectFileByHash(hash string) bool {
 	var info FileInfo
-	err := DB.QueryRow("select * from file_info where hash = ?", hash).Scan(&info.hash, &info.filename, &info.code)
+	err := DB.QueryRow("select * from file_info where hash = ?", hash).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Fid, &info.Size)
 	if err != nil {
 		fmt.Println("查询没结果")
 	}
-	if info.hash != "" {
+	if info.Fid != "" {
 		return true
 	} else {
 		return false
@@ -274,11 +364,46 @@ func SelectFileByHash(hash string) bool {
 // 查询提取码
 func SelectFileByCode(code string) FileInfo {
 	var info FileInfo
-	err := DB.QueryRow("select * from file_info where code = ?", code).Scan(&info.hash, &info.filename, &info.code)
+	err := DB.QueryRow("select * from file_info where cid = ?", code).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Fid, &info.Size)
 	if err != nil {
 		fmt.Println("查询没结果")
 	}
 	return info
+}
+
+// 查询文件列表
+func SelectFileByFid(fid string) ([]map[string]string, bool) {
+	rows,err := DB.Query("select * from file_info where fid = ?", fid)
+	defer rows.Close() 
+	if err != nil {
+		fmt.Println("查询没结果")
+	}
+	columns, _ := rows.Columns()            //获取列的信息
+	count := len(columns)
+	var values = make([]interface{}, count) //创建一个与列的数量相当的空接口
+	for i, _ := range values {
+		var ii interface{} //为空接口分配内存
+		values[i] = &ii    //取得这些内存的指针，因后继的Scan函数只接受指针
+	}
+	ret := make([]map[string]string, 0)
+	for rows.Next() {
+		err := rows.Scan(values...)
+		m := make(map[string]string) //用于存放1列的 [键/值] 对
+		if err != nil {
+			panic(err)
+		}
+		for i, colName := range columns {
+			var raw_value = *(values[i].(*interface{})) //读出raw数据，类型为byte
+			b, _ := raw_value.([]byte)
+			v := string(b) //将raw数据转换成字符串
+			m[colName] = v //colName是键，v是值
+		}
+		ret = append(ret, m) //将单行所有列的键值对附加在总的返回值上（以行为单位）
+	}
+	if len(ret) != 0 {
+		return ret, true
+	}
+	return nil, false
 }
 
 // BKDR Hash
