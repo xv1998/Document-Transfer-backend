@@ -96,9 +96,15 @@ type FileInfo struct {
 	Filename  string `json:"fileName"`
 	Fid       string `json:"fid"`
 	Cid       string `json:"cid"`
-	Hash       string `json:"hash"`
+	Hash      string `json:"hash"`
 	Size      int64  `json:"size"`
 	Path      string `json:"path"`
+	Pwd       string `json:"pwd"`
+}
+
+type VerifyInfo struct {
+	Fid       string `json:"fid"`
+	Exit      bool `json:"exit"`
 }
 
 // func Config() *GloablConfig {
@@ -140,20 +146,26 @@ func CreateFileStat(saveDir string) bool {
 	return true
 }
 
+func CommonRes(c *gin.Context, code int, data map[string]interface{}, msg string) {
+	c.JSON(http.StatusOK, gin.H{
+		"code": code,
+		"data": data,
+		"msg": msg,
+	})
+}
+
 // 多文件上传生成统一id
 func GetUpId(c *gin.Context) {
 	worker, err := utils.NewWorker(1)
+	data := make(map[string]interface{})
 	if err != nil {
+		CommonRes(c, 2001, data, "生成机器id失败")
 		fmt.Println("生成机器id失败",err)
 		return
 	}
 	id := worker.GetId()
-	c.JSON(http.StatusOK, gin.H{
-		"code": 0,
-		"data": gin.H{
-			"fid": id,
-		},
-	})
+	data["fid"] = id
+	CommonRes(c, 0, data, "")
 }
 
 func FileUpload(c *gin.Context) {
@@ -172,59 +184,37 @@ func FileUpload(c *gin.Context) {
 	chunkhash := c.PostForm("chunkhash")
 	savePath = saveDir + "\\" + hash + "-collection"
 	fileName := savePath + "\\" + chunkhash
+	data := make(map[string]interface{})
 
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code": 101,
-		})
+		CommonRes(c, 3001, data, "chunk参数非文件类型")
 		panic(err)
 	}
 	fmt.Println("文件信息：", saveName, hash, savePath)
 	defer file.Close()
-	// //获取上传文件的后缀(类型)
-	// uploadFileNameWithSuffix := path.Base(header.Filename)
-	// uploadFileType := path.Ext(uploadFileNameWithSuffix)
-
-	// 保存的文件夹名称
-	// saveName = fileNameParam + uploadFileType
-	// savePath = saveDir + "\\" + header.Filename
 
 	if !CreateFileStat(saveDir) {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"path":    saveDir,
-			"message": "创建根目录失败",
-		})
+		CommonRes(c, 2011, data, "创建根目录失败")
+		return
 	}
 
 	if !CreateFileStat(savePath) {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"path":    savePath,
-			"message": "创建文件目录失败",
-		})
+		CommonRes(c, 2012, data, "创建文件目录失败")
+		return
 	}
 
 	out, err := os.Create(fileName)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "打开目录失败",
-		})
+		CommonRes(c, 2013, data, "打开目录失败")
 		return
 	}
 	defer out.Close()
 	_, err = io.Copy(out, file)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "生成文件失败",
-		})
+		CommonRes(c, 2012, data, "生成文件失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"code": 0,
-	})
+	CommonRes(c, 0, data, "")
 }
 
 func MergeFileChunk(c *gin.Context) {
@@ -232,6 +222,8 @@ func MergeFileChunk(c *gin.Context) {
 	hash := c.Query("hash")
 	fid := c.Query("fid")	
 	size := c.Query("size")
+	pwd := c.Query("pwd")
+	data := make(map[string]interface{})
 	pathTmp := saveDir + "\\" + hash + "-collection"
 	path := saveDir + "\\" + hash
 	files, _ := ioutil.ReadDir(pathTmp)
@@ -244,12 +236,14 @@ func MergeFileChunk(c *gin.Context) {
 		ff, err := os.OpenFile(pathTmp+"\\"+f.Name(), os.O_RDONLY, os.ModePerm)
 		if err != nil {
 			fmt.Println(err)
+			CommonRes(c, 2021, data, "打开文件目录失败")
 			return
 		}
 		fmt.Println(ff.Name())
 		b, err := ioutil.ReadAll(ff)
 		if err != nil {
 			fmt.Println(err)
+			CommonRes(c, 2023, data, "读取文件失败")
 			return
 		}
 		fii.Write(b)
@@ -257,52 +251,43 @@ func MergeFileChunk(c *gin.Context) {
 	}
 	rawCode := GetBKDRHash(hash + strconv.FormatInt(time.Now().Unix(),10))
 	code := strconv.FormatUint(rawCode, 36)
-	InsertFileHash(hash, fileName,code, fid,size)
+	fail := InsertFid(fid)
+	if fail {
+		CommonRes(c, 2024, data, "插入fid数据失败")
+		return
+	}
+	fail = InsertFileHash(hash, fileName,code, fid,size,pwd)
+	if fail {
+		CommonRes(c, 2025, data, "插入hash数据失败")
+		return
+	}
 	os.RemoveAll(pathTmp)
 	fii.Close()
-	c.JSON(http.StatusOK, gin.H{
-		"code": 0,
-		"data": gin.H{
-			"code": code,
-		},
-	})
+	CommonRes(c, 0, data, "")
 }
 
 // 获取下载文件列表
 func GetFileList(c *gin.Context) {
 	fid := c.PostForm("fid")
 	list, err := SelectFileByFid(fid)
-	if !err {
-		c.JSON(http.StatusOK, gin.H{
-			"code": 101,
-			"message": "获取下载文件列表失败",
-		})
+	data := make(map[string]interface{})
+	fmt.Println("获取到的文件列表", list)
+	if err {
+		CommonRes(c, 2031, data, "获取下载文件列表失败")
+		return
+	}else if len(list) == 0 {
+		CommonRes(c, 2032, data, "提取码错误")
 		return
 	}
-	// file := SelectFileByCode(code)
-	// arr := [...]FileInfo{file}
-	fmt.Println("获取到的文件列表", list)
-	c.JSON(http.StatusOK, gin.H{
-		"code": 0,
-		"data": gin.H{
-			"list": list,
-		},
-	})
+	data["list"] = list
+	CommonRes(c, 0, data, "")
 }
 
 func Download(c *gin.Context) {
 	code, _ := url.QueryUnescape(c.Query("code"))
 	fmt.Print("下载文件code：", code)
 	file := SelectFileByCode(code)
-	// file, err := os.Open(saveDir + "\\" + fileName)
-	// if err != nil {
-	// 	c.JSON(http.StatusNotFound, gin.H{
-	// 		"success": false,
-	// 		"message": "文件加载失败:",
-	// 	})
-	// 	return
-	// }
-	// defer file.Close()
+	
 	c.Writer.WriteHeader(http.StatusOK)
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", "attachment; filename="+url.QueryEscape(file.Filename))
@@ -324,47 +309,91 @@ func Download(c *gin.Context) {
 // 验证是否存在hash
 func VerifyFile(c *gin.Context) {
 	hash := c.Query("hash")
-	fmt.Println("验证hash", hash)
-	isExit := SelectFileByHash(hash)
-	c.JSON(http.StatusOK, gin.H{
-		"code":   0,
-		"isExit": isExit,
-	})
+	newfid := c.Query("fid")
+	isExit := false
+	data := make(map[string]interface{})
+	fid, exist := SelectFileByHash(hash)
+	fmt.Println("查询文件by hash", newfid, fid)
+	if exist {
+		err := UpdateFid(newfid, fid)
+		if err {
+			CommonRes(c, 2041, data, "更新数据失败")
+			return
+		}
+		isExit = true
+	}
+	data["isExit"] = isExit
+	CommonRes(c, 0, data, "")
 }
 
 // 插入上传的文件hash信息
-func InsertFileHash(hash string, name string, code string, fid string,size string) {
-	stmt,err := DB.Prepare("insert into `file_info`(hash,filename,cid,fid,size)values(?,?,?,?,?)")
+func InsertFileHash(hash string, name string, code string, fid string,size string,pwd string) bool{
+	stmt,err := DB.Prepare("insert into `file_info`(hash,filename,cid,fid,size,pwd)values(?,?,?,?,?,?)")
 	if err != nil{
-		fmt.Println("预处理失败:",err)
+		fmt.Println("file_info预处理失败:",err)
+		return true
 	}
-	result,err := stmt.Exec(hash,name,code,fid,size)
+	result,err := stmt.Exec(hash,name,code,fid,size,pwd)
 	if err != nil{
-		fmt.Println("执行预处理失败:",err)
+		fmt.Println("插入文件信息失败:",err)
+		return true
 	}else{
 		rows,_ := result.RowsAffected()
 		fmt.Println("执行成功,影响行数",rows,"行" )
+		return false
 	}
 }
-
+func InsertFid(fid string) bool{
+	stmt,err := DB.Prepare("insert into `fid_collection`(fid,time)values(?,?)")
+	if err != nil{
+		fmt.Println("fid_collection预处理失败:",err)
+		return true
+	}
+	t := time.Now()
+	result,err := stmt.Exec(fid,t)
+	if err != nil{
+		fmt.Println("插入fid失败:",err)
+		return true
+	}else{
+		rows,_ := result.RowsAffected()
+		fmt.Println("执行成功,影响行数",rows,"行" )
+		return false
+	}
+}
+func UpdateFid(newfid string, oldfid string) bool{
+	sqlStr := "update fid_collection set fid=?, time=? where fid=?"
+	time := time.Now()
+	ret, err := DB.Exec(sqlStr, newfid, time, oldfid)
+	if err != nil {
+		fmt.Printf("update failed, err:%v\n", err)
+		return true
+	}
+	n, err := ret.RowsAffected() // 操作影响的行数
+	if err != nil {
+		fmt.Printf("get RowsAffected failed, err:%v\n", err)
+		return true
+	}
+	fmt.Printf("更新成功, affected rows:%d\n", n)
+	return false
+}
 // 查询文件hash
-func SelectFileByHash(hash string) bool {
+func SelectFileByHash(hash string) (string, bool){
 	var info FileInfo
-	err := DB.QueryRow("select * from file_info where hash = ?", hash).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Fid, &info.Size)
+	err := DB.QueryRow("select * from file_info where hash = ?", hash).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Fid, &info.Size,&info.Pwd)
 	if err != nil {
 		fmt.Println("查询没结果")
 	}
 	if info.Fid != "" {
-		return true
+		return info.Fid, true
 	} else {
-		return false
+		return "", false
 	}
 }
 
 // 查询提取码
 func SelectFileByCode(code string) FileInfo {
 	var info FileInfo
-	err := DB.QueryRow("select * from file_info where cid = ?", code).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Fid, &info.Size)
+	err := DB.QueryRow("select * from file_info where cid = ?", code).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Fid, &info.Size, &info.Pwd)
 	if err != nil {
 		fmt.Println("查询没结果")
 	}
@@ -374,9 +403,11 @@ func SelectFileByCode(code string) FileInfo {
 // 查询文件列表
 func SelectFileByFid(fid string) ([]map[string]string, bool) {
 	rows,err := DB.Query("select * from file_info where fid = ?", fid)
+	ret := make([]map[string]string, 0)
 	defer rows.Close() 
 	if err != nil {
-		fmt.Println("查询没结果")
+		fmt.Println("查询出错")
+		return ret, true
 	}
 	columns, _ := rows.Columns()            //获取列的信息
 	count := len(columns)
@@ -385,7 +416,6 @@ func SelectFileByFid(fid string) ([]map[string]string, bool) {
 		var ii interface{} //为空接口分配内存
 		values[i] = &ii    //取得这些内存的指针，因后继的Scan函数只接受指针
 	}
-	ret := make([]map[string]string, 0)
 	for rows.Next() {
 		err := rows.Scan(values...)
 		m := make(map[string]string) //用于存放1列的 [键/值] 对
@@ -400,10 +430,7 @@ func SelectFileByFid(fid string) ([]map[string]string, bool) {
 		}
 		ret = append(ret, m) //将单行所有列的键值对附加在总的返回值上（以行为单位）
 	}
-	if len(ret) != 0 {
-		return ret, true
-	}
-	return nil, false
+	return ret, false
 }
 
 // BKDR Hash
