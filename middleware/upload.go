@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"log"
 	"strings"
 	// "sync/atomic"
 	// "unsafe"
@@ -129,6 +130,32 @@ func InitDB() {
 	fmt.Println("connnect success")
 }
 
+// 清理磁盘过期文件
+func ClearDisk(){
+	log.Println("cron running: start cleaning")
+	time := time.Unix(time.Now().Unix()-600, 0)
+	rows,err := DB.Query("select * from fid_collection where time < ?",time.Format("2006-01-02 15:04:05"))
+	defer rows.Close() 
+	if err != nil {
+		fmt.Println("查询出错")
+	}
+	for rows.Next(){
+		var time, fid string
+		err = rows.Scan(&fid, &time)
+		hash := SelectByFidGetHash(fid)
+		if hash != ""{
+			path := saveDir + "\\" + hash
+			os.RemoveAll(path)
+			err := DeleteFileByFid(fid)
+			if err {
+				panic("清理文件出错")
+			}
+		}
+		fmt.Println("查询出来的fid表", time, fid,hash)
+	}
+}
+
+ 
 // 初始化存储目录
 func CreateFileStat(saveDir string) bool {
 	//打开目录
@@ -431,6 +458,32 @@ func SelectFileByFid(fid string) ([]map[string]string, bool) {
 		ret = append(ret, m) //将单行所有列的键值对附加在总的返回值上（以行为单位）
 	}
 	return ret, false
+}
+
+func SelectByFidGetHash(fid string) string {
+	var info FileInfo
+	err := DB.QueryRow("select * from file_info where fid = ?", fid).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Fid, &info.Size, &info.Pwd)
+	if err != nil {
+		fmt.Println("通过fid查询hash没结果")
+		return ""
+	}
+	return info.Hash
+}
+
+func DeleteFileByFid(fid string) bool{
+	sqlStr := "delete from fid_collection where fid=?"
+	ret, err := DB.Exec(sqlStr, fid)
+	if err != nil {
+		fmt.Printf("delete failed, err:%v\n", err)
+		return true
+	}
+	n, err := ret.RowsAffected() // 操作影响的行数
+	if err != nil {
+		fmt.Printf("get RowsAffected failed, err:%v\n", err)
+		return true
+	}
+	fmt.Printf("删除成功, affected rows:%d\n", n)
+	return false
 }
 
 // BKDR Hash

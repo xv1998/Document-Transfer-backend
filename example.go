@@ -2,12 +2,20 @@ package main
 
 import (
 	"backend/middleware"
-
 	"github.com/gin-gonic/gin"
+	"github.com/robfig/cron"
 )
 
+func InitPeriodicTask(f func()){
+	c := cron.New()
+	spec := "*/5 * * * * ?"
+	c.AddFunc(spec, f)
+	c.Start()
+}
+
 func main() {
-	middleware.InitDB()
+	go middleware.InitDB()
+	go InitPeriodicTask(middleware.ClearDisk)
 	r := gin.Default()
 	r.Use(middleware.Cors())
 	r.POST("/file/upload", middleware.FileUpload)
@@ -18,3 +26,23 @@ func main() {
 	r.POST("/file/getlist", middleware.GetFileList)
 	r.Run(":8081")
 }
+
+// package main
+ 
+// import (
+//     "github.com/robfig/cron"
+//     "log"
+// )
+ 
+// func main() {
+//     i := 0
+//     c := cron.New()
+//     spec := "*/5 * * * * ?"
+//     c.AddFunc(spec, func() {
+//         i++
+//         log.Println("cron running:", i)
+//     })
+//     c.Start()
+ 
+//     select{}
+// }
