@@ -290,6 +290,7 @@ func MergeFileChunk(c *gin.Context) {
 	}
 	os.RemoveAll(pathTmp)
 	fii.Close()
+	data["time"] = time.Now().Unix() + 1800
 	CommonRes(c, 0, data, "")
 }
 
@@ -340,16 +341,19 @@ func VerifyFile(c *gin.Context) {
 	isExit := false
 	data := make(map[string]interface{})
 	fid, exist := SelectFileByHash(hash)
+	var time int64
 	fmt.Println("查询文件by hash", newfid, fid)
 	if exist {
-		err := UpdateFid(newfid, fid)
+		t, err := UpdateFid(newfid, fid)
 		if err {
 			CommonRes(c, 2041, data, "更新数据失败")
 			return
 		}
+		time = t
 		isExit = true
 	}
 	data["isExit"] = isExit
+	data["time"] = time
 	CommonRes(c, 0, data, "")
 }
 
@@ -387,21 +391,21 @@ func InsertFid(fid string) bool{
 		return false
 	}
 }
-func UpdateFid(newfid string, oldfid string) bool{
+func UpdateFid(newfid string, oldfid string) (int64, bool){
 	sqlStr := "update fid_collection set fid=?, time=? where fid=?"
 	time := time.Now()
 	ret, err := DB.Exec(sqlStr, newfid, time, oldfid)
 	if err != nil {
 		fmt.Printf("update failed, err:%v\n", err)
-		return true
+		return 0, true
 	}
 	n, err := ret.RowsAffected() // 操作影响的行数
 	if err != nil {
 		fmt.Printf("get RowsAffected failed, err:%v\n", err)
-		return true
+		return 0,true
 	}
 	fmt.Printf("更新成功, affected rows:%d\n", n)
-	return false
+	return time.Unix(), false
 }
 // 查询文件hash
 func SelectFileByHash(hash string) (string, bool){

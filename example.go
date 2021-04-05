@@ -8,7 +8,7 @@ import (
 
 func InitPeriodicTask(f func()){
 	c := cron.New()
-	spec := "*/5 * * * * ?"
+	spec := "0 0 */1 * * ?"
 	c.AddFunc(spec, f)
 	c.Start()
 }
