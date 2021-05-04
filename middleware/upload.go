@@ -103,6 +103,11 @@ type FileInfo struct {
 	Pwd       string `json:"pwd"`
 }
 
+type FidInfo struct {
+	Fid       string `json:"fid"`
+	Time      string `json:"time"`
+}
+
 type VerifyInfo struct {
 	Fid       string `json:"fid"`
 	Exit      bool `json:"exit"`
@@ -375,6 +380,12 @@ func InsertFileHash(hash string, name string, code string, fid string,size strin
 	}
 }
 func InsertFid(fid string) bool{
+	var fidInfo FidInfo
+	err := DB.QueryRow("select * from fid_collection where fid = ?", fid).Scan(&fidInfo.Fid, &fidInfo.Time)
+	if err == nil {
+		fmt.Println("查询fid_collection的fid没结果")
+		return false
+	}
 	stmt,err := DB.Prepare("insert into `fid_collection`(fid,time)values(?,?)")
 	if err != nil{
 		fmt.Println("fid_collection预处理失败:",err)
