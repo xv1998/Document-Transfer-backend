@@ -15,7 +15,7 @@ func InitPeriodicTask(f func()){
 
 func main() {
 	go middleware.InitDB()
-	go InitPeriodicTask(middleware.ClearDisk)
+	// go InitPeriodicTask(middleware.ClearDisk)
 	r := gin.Default()
 	r.Use(middleware.Cors())
 	r.POST("/file/upload", middleware.FileUpload)

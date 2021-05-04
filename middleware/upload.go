@@ -95,7 +95,6 @@ var (
 // 小写的字段被认为是私有的，不会被标准的json序列化程序序列化。
 type FileInfo struct {
 	Filename  string `json:"fileName"`
-	Fid       string `json:"fid"`
 	Cid       string `json:"cid"`
 	Hash      string `json:"hash"`
 	Size      int64  `json:"size"`
@@ -106,6 +105,11 @@ type FileInfo struct {
 type FidInfo struct {
 	Fid       string `json:"fid"`
 	Time      string `json:"time"`
+}
+
+type FidList struct {
+	Fid       string `json:"fid"`
+	Hash      string `json:"hash"`
 }
 
 type VerifyInfo struct {
@@ -138,8 +142,8 @@ func InitDB() {
 // 清理磁盘过期文件
 func ClearDisk(){
 	log.Println("cron running: start cleaning")
-	time := time.Unix(time.Now().Unix()-600, 0)
-	rows,err := DB.Query("select * from fid_collection where time < ?",time.Format("2006-01-02 15:04:05"))
+	time := time.Now().Unix()-600
+	rows,err := DB.Query("select * from fid_collection where time < ?",time)
 	defer rows.Close() 
 	if err != nil {
 		fmt.Println("查询出错")
@@ -283,19 +287,19 @@ func MergeFileChunk(c *gin.Context) {
 	}
 	rawCode := GetBKDRHash(hash + strconv.FormatInt(time.Now().Unix(),10))
 	code := strconv.FormatUint(rawCode, 36)
-	fail := InsertFid(fid)
+	t, fail := InsertFid(fid)
 	if fail {
 		CommonRes(c, 2024, data, "插入fid数据失败")
 		return
 	}
-	fail = InsertFileHash(hash, fileName,code, fid,size,pwd)
+	fail = InsertFileInfo(hash, fileName,code, size, pwd)
 	if fail {
 		CommonRes(c, 2025, data, "插入hash数据失败")
 		return
 	}
 	os.RemoveAll(pathTmp)
 	fii.Close()
-	data["time"] = time.Now().Unix() + 1800
+	data["time"] = t + 1800
 	CommonRes(c, 0, data, "")
 }
 
@@ -343,33 +347,33 @@ func Download(c *gin.Context) {
 func VerifyFile(c *gin.Context) {
 	hash := c.Query("hash")
 	newfid := c.Query("fid")
-	isExit := false
 	data := make(map[string]interface{})
-	fid, exist := SelectFileByHash(hash)
-	var time int64
-	fmt.Println("查询文件by hash", newfid, fid)
-	if exist {
-		t, err := UpdateFid(newfid, fid)
-		if err {
-			CommonRes(c, 2041, data, "更新数据失败")
-			return
-		}
-		time = t
-		isExit = true
+	// 查询是否存在文件
+	isExit := SelectListByHash(hash)
+	// 直接list表插入数据
+	err := InsertFidToList(newfid,hash)
+	if err {
+		CommonRes(c, 2041, data, "插入数据失败")
+		return
+	}
+	t, fail := InsertFid(newfid)
+	if fail {
+		CommonRes(c, 2024, data, "插入fid数据失败")
+		return
 	}
 	data["isExit"] = isExit
-	data["time"] = time
+	data["time"] = t
 	CommonRes(c, 0, data, "")
 }
 
 // 插入上传的文件hash信息
-func InsertFileHash(hash string, name string, code string, fid string,size string,pwd string) bool{
-	stmt,err := DB.Prepare("insert into `file_info`(hash,filename,cid,fid,size,pwd)values(?,?,?,?,?,?)")
+func InsertFileInfo(hash string, name string, code string, size string,pwd string) bool{
+	stmt,err := DB.Prepare("insert into `file_info`(hash,filename,cid,size,pwd)values(?,?,?,?,?)")
 	if err != nil{
 		fmt.Println("file_info预处理失败:",err)
 		return true
 	}
-	result,err := stmt.Exec(hash,name,code,fid,size,pwd)
+	result,err := stmt.Exec(hash,name,code,size,pwd)
 	if err != nil{
 		fmt.Println("插入文件信息失败:",err)
 		return true
@@ -379,63 +383,90 @@ func InsertFileHash(hash string, name string, code string, fid string,size strin
 		return false
 	}
 }
-func InsertFid(fid string) bool{
+func InsertFid(fid string) (int64, bool){
 	var fidInfo FidInfo
+	t := time.Now().Unix()
 	err := DB.QueryRow("select * from fid_collection where fid = ?", fid).Scan(&fidInfo.Fid, &fidInfo.Time)
-	if err == nil {
-		fmt.Println("查询fid_collection的fid没结果")
-		return false
+	if err != nil {
+		fmt.Println("查询fid_collection的fid已存在", fidInfo.Fid)
+		// 更新时间
+		sqlStr := "update fid_collection set time=? where fid=?"
+		ret, err := DB.Exec(sqlStr, t, fid)
+		if err != nil {
+			fmt.Printf("update 时间失败, err:%v\n", err)
+			return 0, true
+		}
+		n, err := ret.RowsAffected() // 操作影响的行数
+		if err != nil {
+			fmt.Printf("get RowsAffected failed, err:%v\n", err)
+			return 0,true
+		}
+		fmt.Printf("更新时间成功, affected rows:%d\n", n)
+		return t, false
 	}
 	stmt,err := DB.Prepare("insert into `fid_collection`(fid,time)values(?,?)")
 	if err != nil{
 		fmt.Println("fid_collection预处理失败:",err)
-		return true
+		return 0, true
 	}
-	t := time.Now()
 	result,err := stmt.Exec(fid,t)
 	if err != nil{
 		fmt.Println("插入fid失败:",err)
-		return true
+		return 0, true
 	}else{
 		rows,_ := result.RowsAffected()
 		fmt.Println("执行成功,影响行数",rows,"行" )
+		return t, false
+	}
+}
+func InsertFidToList(fid string, hash string) bool{
+	stmt,err := DB.Prepare("insert into `fid_hash_list`(fid,hash)values(?,?)")
+	if err != nil{
+		fmt.Println("fid_hash_list插入预处理失败:",err)
+		return true
+	}
+	result,err := stmt.Exec(fid,hash)
+	if err != nil{
+		fmt.Println("fid_hash_list插入fid、hash失败:",err)
+		return true
+	}else{
+		rows,_ := result.RowsAffected()
+		fmt.Println("fid_hash_list执行成功,影响行数",rows,"行" )
 		return false
 	}
-}
-func UpdateFid(newfid string, oldfid string) (int64, bool){
-	sqlStr := "update fid_collection set fid=?, time=? where fid=?"
-	time := time.Now()
-	ret, err := DB.Exec(sqlStr, newfid, time, oldfid)
-	if err != nil {
-		fmt.Printf("update failed, err:%v\n", err)
-		return 0, true
-	}
-	n, err := ret.RowsAffected() // 操作影响的行数
-	if err != nil {
-		fmt.Printf("get RowsAffected failed, err:%v\n", err)
-		return 0,true
-	}
-	fmt.Printf("更新成功, affected rows:%d\n", n)
-	return time.Unix(), false
+	// sqlStr := "update fid_collection set fid=?, time=? where fid=?"
+	// time := time.Now()
+	// ret, err := DB.Exec(sqlStr, newfid, time, oldfid)
+	// if err != nil {
+	// 	fmt.Printf("update failed, err:%v\n", err)
+	// 	return 0, true
+	// }
+	// n, err := ret.RowsAffected() // 操作影响的行数
+	// if err != nil {
+	// 	fmt.Printf("get RowsAffected failed, err:%v\n", err)
+	// 	return 0,true
+	// }
+	// fmt.Printf("更新成功, affected rows:%d\n", n)
+	// return time.Unix(), false
 }
 // 查询文件hash
-func SelectFileByHash(hash string) (string, bool){
-	var info FileInfo
-	err := DB.QueryRow("select * from file_info where hash = ?", hash).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Fid, &info.Size,&info.Pwd)
-	if err != nil {
-		fmt.Println("查询没结果")
-	}
-	if info.Fid != "" {
-		return info.Fid, true
-	} else {
-		return "", false
-	}
-}
+// func SelectFileByHash(hash string) (string, bool){
+// 	var info FileInfo
+// 	err := DB.QueryRow("select * from file_info where hash = ?", hash).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Size,&info.Pwd)
+// 	if err != nil {
+// 		fmt.Println("查询没结果")
+// 	}
+// 	if info.Fid != "" {
+// 		return info.Fid, true
+// 	} else {
+// 		return "", false
+// 	}
+// }
 
 // 查询提取码
 func SelectFileByCode(code string) FileInfo {
 	var info FileInfo
-	err := DB.QueryRow("select * from file_info where cid = ?", code).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Fid, &info.Size, &info.Pwd)
+	err := DB.QueryRow("select * from file_info where cid = ?", code).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Size, &info.Pwd)
 	if err != nil {
 		fmt.Println("查询没结果")
 	}
@@ -444,11 +475,11 @@ func SelectFileByCode(code string) FileInfo {
 
 // 查询文件列表
 func SelectFileByFid(fid string) ([]map[string]string, bool) {
-	rows,err := DB.Query("select * from file_info where fid = ?", fid)
+	rows,err := DB.Query("select * from file_info as info left join fid_hash_list as list on list.hash=info.hash where fid = ?", fid)
 	ret := make([]map[string]string, 0)
 	defer rows.Close() 
 	if err != nil {
-		fmt.Println("查询出错")
+		fmt.Println("查询文件列表出错")
 		return ret, true
 	}
 	columns, _ := rows.Columns()            //获取列的信息
@@ -477,12 +508,32 @@ func SelectFileByFid(fid string) ([]map[string]string, bool) {
 
 func SelectByFidGetHash(fid string) string {
 	var info FileInfo
-	err := DB.QueryRow("select * from file_info where fid = ?", fid).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Fid, &info.Size, &info.Pwd)
+	err := DB.QueryRow("select * from file_info where fid = ?", fid).Scan(&info.Hash, &info.Filename, &info.Cid, &info.Size, &info.Pwd)
 	if err != nil {
 		fmt.Println("通过fid查询hash没结果")
 		return ""
 	}
 	return info.Hash
+}
+
+func SelectListByFid(fid string) string {
+	var info FidList
+	err := DB.QueryRow("select * from fid_hash_list where fid = ?", fid).Scan(&info.Fid, &info.Hash)
+	if err != nil {
+		fmt.Println("通过fid查询hash没结果")
+		return ""
+	}
+	return info.Hash
+}
+
+func SelectListByHash(hash string) bool {
+	var info FidList
+	err := DB.QueryRow("select hash from fid_hash_list where hash = ?", hash).Scan(&info.Hash)
+	if err != nil {
+		fmt.Println("通过list查询hash没结果", hash)
+		return false
+	}
+	return true
 }
 
 func DeleteFileByFid(fid string) bool{
