@@ -104,7 +104,8 @@ type FileInfo struct {
 
 type FidInfo struct {
 	Fid       string `json:"fid"`
-	Time      string `json:"time"`
+	Time      int64 `json:"time"`
+	Pwd       string `json:"pwd"`
 }
 
 type FidList struct {
@@ -192,6 +193,7 @@ func CommonRes(c *gin.Context, code int, data map[string]interface{}, msg string
 
 // 多文件上传生成统一id
 func GetUpId(c *gin.Context) {
+	pwd := c.Query("pwd")
 	worker, err := utils.NewWorker(1)
 	data := make(map[string]interface{})
 	if err != nil {
@@ -200,6 +202,11 @@ func GetUpId(c *gin.Context) {
 		return
 	}
 	id := worker.GetId()
+	_, fail := InsertFid(id, pwd)
+	if fail {
+		CommonRes(c, 2024, data, "插入fid数据失败")
+		return
+	}
 	data["fid"] = id
 	CommonRes(c, 0, data, "")
 }
@@ -287,9 +294,9 @@ func MergeFileChunk(c *gin.Context) {
 	}
 	rawCode := GetBKDRHash(hash + strconv.FormatInt(time.Now().Unix(),10))
 	code := strconv.FormatUint(rawCode, 36)
-	t, fail := InsertFid(fid)
+	t, fail := SelectCollectionGetTime(fid)
 	if fail {
-		CommonRes(c, 2024, data, "插入fid数据失败")
+		CommonRes(c, 2024, data, "获取时间失败")
 		return
 	}
 	fail = InsertFileInfo(hash, fileName,code, size, pwd)
@@ -299,13 +306,32 @@ func MergeFileChunk(c *gin.Context) {
 	}
 	os.RemoveAll(pathTmp)
 	fii.Close()
-	data["time"] = t + 1800
+	data["time"] = t
 	CommonRes(c, 0, data, "")
 }
 
-// 获取下载文件列表
-func GetFileList(c *gin.Context) {
+func CheckPwd(c *gin.Context) {
 	fid := c.PostForm("fid")
+	pwd := c.PostForm("pwd")
+	needPwd, cur := SelectPwd(fid, pwd)
+	fmt.Println("获取到的访问密码", fid, pwd)
+	data := make(map[string]interface{})
+	if needPwd {
+		if pwd == "" {
+			data["needPwd"] = true
+			CommonRes(c, 0, data, "")
+		}else if cur{
+			GetFileList(fid,c)
+		}else {
+			CommonRes(c, 2025, data, "访问密码错误")
+		}
+	}else {
+		GetFileList(fid,c)
+	}
+}
+
+// 获取下载文件列表
+func GetFileList(fid string, c *gin.Context) {
 	list, err := SelectFileByFid(fid)
 	data := make(map[string]interface{})
 	fmt.Println("获取到的文件列表", list)
@@ -346,24 +372,38 @@ func Download(c *gin.Context) {
 // 验证是否存在hash
 func VerifyFile(c *gin.Context) {
 	hash := c.Query("hash")
-	newfid := c.Query("fid")
+	fid := c.Query("fid")
 	data := make(map[string]interface{})
 	// 查询是否存在文件
 	isExit := SelectListByHash(hash)
 	// 直接list表插入数据
-	err := InsertFidToList(newfid,hash)
+	err := InsertFidToList(fid,hash)
 	if err {
 		CommonRes(c, 2041, data, "插入数据失败")
 		return
 	}
-	t, fail := InsertFid(newfid)
+	t, fail := SelectCollectionGetTime(fid)
 	if fail {
-		CommonRes(c, 2024, data, "插入fid数据失败")
+		CommonRes(c, 2024, data, "获取时间失败")
 		return
 	}
 	data["isExit"] = isExit
 	data["time"] = t
 	CommonRes(c, 0, data, "")
+}
+
+func SelectPwd(fid string, pwd string) (bool, bool) {
+	var info FidInfo
+	err := DB.QueryRow("select pwd from fid_collection where fid = ?", fid).Scan(&info.Pwd)
+	if err != nil {
+		fmt.Println("检测是否需要密码访问没结果")
+		return false, false
+	}
+	if pwd == info.Pwd {
+		return true, true
+	}else {
+		return true, false
+	}
 }
 
 // 插入上传的文件hash信息
@@ -383,12 +423,12 @@ func InsertFileInfo(hash string, name string, code string, size string,pwd strin
 		return false
 	}
 }
-func InsertFid(fid string) (int64, bool){
+func InsertFid(fid string, pwd string) (int64, bool){
 	var fidInfo FidInfo
-	t := time.Now().Unix()
+	t := time.Now().Unix() + 3600
 	err := DB.QueryRow("select * from fid_collection where fid = ?", fid).Scan(&fidInfo.Fid, &fidInfo.Time)
-	if err != nil {
-		fmt.Println("查询fid_collection的fid已存在", fidInfo.Fid)
+	if err == nil {
+		fmt.Println("查询fid_collection的fid已存在", fid, fidInfo.Fid)
 		// 更新时间
 		sqlStr := "update fid_collection set time=? where fid=?"
 		ret, err := DB.Exec(sqlStr, t, fid)
@@ -404,12 +444,12 @@ func InsertFid(fid string) (int64, bool){
 		fmt.Printf("更新时间成功, affected rows:%d\n", n)
 		return t, false
 	}
-	stmt,err := DB.Prepare("insert into `fid_collection`(fid,time)values(?,?)")
+	stmt,err := DB.Prepare("insert into `fid_collection`(fid,time,pwd)values(?,?,?)")
 	if err != nil{
 		fmt.Println("fid_collection预处理失败:",err)
 		return 0, true
 	}
-	result,err := stmt.Exec(fid,t)
+	result,err := stmt.Exec(fid,t,pwd)
 	if err != nil{
 		fmt.Println("插入fid失败:",err)
 		return 0, true
@@ -514,6 +554,17 @@ func SelectByFidGetHash(fid string) string {
 		return ""
 	}
 	return info.Hash
+}
+
+
+func SelectCollectionGetTime(fid string) (int64, bool) {
+	var info FidInfo
+	err := DB.QueryRow("select * from fid_collection where fid = ?", fid).Scan(&info.Fid, &info.Time, &info.Pwd)
+	if err != nil {
+		fmt.Println("通过fid查询hash没结果")
+		return time.Now().Unix(), true
+	}
+	return info.Time, false
 }
 
 func SelectListByFid(fid string) string {

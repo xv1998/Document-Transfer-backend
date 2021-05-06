@@ -23,7 +23,7 @@ func main() {
 	r.GET("/file/merge", middleware.MergeFileChunk)
 	r.GET("/file/download", middleware.Download)
 	r.GET("/file/verify", middleware.VerifyFile)
-	r.POST("/file/getlist", middleware.GetFileList)
+	r.POST("/file/checkpwd", middleware.CheckPwd)
 	r.Run(":8081")
 }
 
