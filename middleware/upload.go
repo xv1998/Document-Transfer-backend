@@ -314,7 +314,7 @@ func CheckPwd(c *gin.Context) {
 	fid := c.PostForm("fid")
 	pwd := c.PostForm("pwd")
 	needPwd, cur := SelectPwd(fid, pwd)
-	fmt.Println("获取到的访问密码", fid, pwd)
+	fmt.Println("获取到的访问密码", fid, pwd,needPwd)
 	data := make(map[string]interface{})
 	if needPwd {
 		if pwd == "" {
@@ -395,7 +395,7 @@ func VerifyFile(c *gin.Context) {
 func SelectPwd(fid string, pwd string) (bool, bool) {
 	var info FidInfo
 	err := DB.QueryRow("select pwd from fid_collection where fid = ?", fid).Scan(&info.Pwd)
-	if err != nil {
+	if err != nil || info.Pwd == "" {
 		fmt.Println("检测是否需要密码访问没结果")
 		return false, false
 	}
